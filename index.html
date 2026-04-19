@@ -207,10 +207,8 @@ async function saveCategoriesOnly(){
 async function saveToSheet(date){
   setSyncing('保存中…');
   try{
-    const saves=[];
-    if(date) saves.push(saveDay(date));
-    else saves.push(saveCategoriesOnly());
-    await Promise.all(saves);
+    if(date) await saveDay(date);
+    else await saveCategoriesOnly();
     setSyncing('已保存 ✓');
     setTimeout(()=>setSyncing(''),2000);
   }catch(e){setSyncing('保存失败');}
@@ -273,9 +271,10 @@ async function seedData(){
       {id:uid(),text:'booth虚拟产品 人设',done:false,children:[]},
     ]},
   ];
-  const saves=Object.keys(days).map(d=>saveDay(d));
-  saves.push(saveCategoriesOnly());
-  await Promise.all(saves);
+  for(const d of Object.keys(days)){
+    await saveDay(d);
+  }
+  await saveCategoriesOnly();
 }
 
 /* ── GOALS ── */
