@@ -175,7 +175,7 @@ async function sbGet(key){
 }
 
 async function sbSet(key,value){
-  await fetch(API,{
+  await fetch(API+'?on_conflict=key',{
     method:'POST',
     headers:{...HEADERS,'Prefer':'resolution=merge-duplicates'},
     body:JSON.stringify({key,value})
