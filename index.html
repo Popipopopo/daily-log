@@ -195,13 +195,13 @@ async function loadFromSheet(){
 
 async function saveDay(date){
   const items=days[date]||[];
-  const encoded=encodeURIComponent(JSON.stringify(items));
-  await jsonp(API+'?action=saveDay&date='+encodeURIComponent(date)+'&data='+encoded);
+  const url=API+'?action=saveDay&date='+encodeURIComponent(date)+'&data='+encodeURIComponent(JSON.stringify(items));
+  await fetch(url,{method:'GET',mode:'no-cors'});
 }
 
 async function saveCategoriesOnly(){
-  const encoded=encodeURIComponent(JSON.stringify(categories));
-  await jsonp(API+'?action=saveCategories&data='+encoded);
+  const url=API+'?action=saveCategories&data='+encodeURIComponent(JSON.stringify(categories));
+  await fetch(url,{method:'GET',mode:'no-cors'});
 }
 
 async function saveToSheet(date){
