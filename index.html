@@ -153,7 +153,11 @@ body{background:var(--bg);color:var(--ink);font-family:var(--sans);min-height:10
   <div id="pHistory" style="display:none"></div>
 </div>
 <script>
-const API='https://script.google.com/macros/s/AKfycbw_YwNlUo4w979EcqxQq7vr9nCXVaWhUIrFmYjriHzn9-33lx1JDcpiZQvBymROVhr-6w/exec';
+const SB_URL='https://cddgefsnscosrghznxfi.supabase.co';
+const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNkZGdlZnNuc2Nvc3JnaHpueGZpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY2MTYzOTIsImV4cCI6MjA5MjE5MjM5Mn0.IebSPHTkR4CBsBCGbmzuqXRQRqMssLgXUERQ1F97Ih8';
+const HEADERS={'Content-Type':'application/json','apikey':SB_KEY,'Authorization':'Bearer '+SB_KEY};
+const API=SB_URL+'/rest/v1/log';
+
 let days={}, categories=[], curTab='goals', viewDate='', curMonth='', editingCatId=null;
 
 function tod(){return new Date().toISOString().slice(0,10);}
@@ -162,65 +166,53 @@ function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').repl
 function uid(){return Date.now()+Math.random();}
 function shiftD(d,n){const dt=new Date(d+'T12:00:00');dt.setDate(dt.getDate()+n);return dt.toISOString().slice(0,10);}
 function fmtDate(d){return new Date(d+'T12:00:00').toLocaleDateString('zh-CN',{month:'long',day:'numeric',weekday:'short'});}
-
 function setSyncing(msg){const el=document.getElementById('sync-status');if(el)el.textContent=msg;}
 
-function jsonp(url){
-  return new Promise((resolve,reject)=>{
-    const cb='cb_'+Date.now();
-    const s=document.createElement('script');
-    window[cb]=(data)=>{ delete window[cb]; document.head.removeChild(s); resolve(data); };
-    s.onerror=()=>{ delete window[cb]; document.head.removeChild(s); reject(new Error('jsonp error')); };
-    s.src=url+(url.includes('?')?'&':'?')+'callback='+cb;
-    document.head.appendChild(s);
+async function sbGet(key){
+  const r=await fetch(`${API}?key=eq.${encodeURIComponent(key)}&select=value`,{headers:HEADERS});
+  const data=await r.json();
+  return data&&data[0]?data[0].value:null;
+}
+
+async function sbSet(key,value){
+  await fetch(API,{
+    method:'POST',
+    headers:{...HEADERS,'Prefer':'resolution=merge-duplicates'},
+    body:JSON.stringify({key,value})
   });
 }
 
 async function loadFromSheet(){
   setSyncing('加载中…');
   try{
-    const data=await jsonp(API+'?action=load');
-    days=data.days||{};
-    if(data.categories&&data.categories.length>0){
-      categories=data.categories;
-    } else if(data.lt&&data.lt.length>0){
-      migrateOldLT(data.lt);
-      await saveCategoriesOnly();
-    } else if(Object.keys(days).length===0&&(!data.categories||data.categories.length===0)){
-      await seedData();
-    }
-  }catch(e){days={};categories=[];await seedData();}
+    const [daysVal,catsVal]=await Promise.all([sbGet('days'),sbGet('cats')]);
+    days=daysVal?JSON.parse(daysVal):{};
+    categories=catsVal?JSON.parse(catsVal):[];
+    if(Object.keys(days).length===0&&categories.length===0) await seedData();
+  }catch(e){
+    days={};categories=[];
+    setSyncing('加载失败，使用本地缓存');
+    try{days=JSON.parse(localStorage.getItem('dlb_days')||'{}');}catch(e2){}
+    try{categories=JSON.parse(localStorage.getItem('dlb_cats')||'[]');}catch(e2){}
+    if(Object.keys(days).length===0&&categories.length===0) await seedData();
+  }
   setSyncing('');
 }
 
-async function saveDay(date){
-  const items=days[date]||[];
-  const url=API+'?action=saveDay&date='+encodeURIComponent(date)+'&data='+encodeURIComponent(JSON.stringify(items));
-  await fetch(url,{method:'GET',mode:'no-cors'});
-}
-
-async function saveCategoriesOnly(){
-  const url=API+'?action=saveCategories&data='+encodeURIComponent(JSON.stringify(categories));
-  await fetch(url,{method:'GET',mode:'no-cors'});
-}
-
-async function saveToSheet(date){
+async function saveToSheet(type){
   setSyncing('保存中…');
   try{
-    if(date) await saveDay(date);
-    else await saveCategoriesOnly();
+    if(type==='cats'||type==='all') await sbSet('cats',JSON.stringify(categories));
+    if(type==='days'||type==='all') await sbSet('days',JSON.stringify(days));
+    localStorage.setItem('dlb_days',JSON.stringify(days));
+    localStorage.setItem('dlb_cats',JSON.stringify(categories));
     setSyncing('已保存 ✓');
-    setTimeout(()=>setSyncing(''),2000);
-  }catch(e){setSyncing('保存失败');}
-}
-
-function trimOldDays(keepDays){
-  const cutoff=new Date();
-  cutoff.setDate(cutoff.getDate()-keepDays);
-  const cutStr=cutoff.toISOString().slice(0,10);
-  const trimmed={};
-  Object.keys(days).filter(d=>d>=cutStr).forEach(d=>{trimmed[d]=days[d];});
-  return trimmed;
+    setTimeout(()=>setSyncing(''),1500);
+  }catch(e){
+    localStorage.setItem('dlb_days',JSON.stringify(days));
+    localStorage.setItem('dlb_cats',JSON.stringify(categories));
+    setSyncing('云端保存失败，已存本地');
+  }
 }
 
 function migrateOldLT(lt){
@@ -271,10 +263,7 @@ async function seedData(){
       {id:uid(),text:'booth虚拟产品 人设',done:false,children:[]},
     ]},
   ];
-  for(const d of Object.keys(days)){
-    await saveDay(d);
-  }
-  await saveCategoriesOnly();
+  saveToSheet('all');
 }
 
 /* ── GOALS ── */
@@ -379,19 +368,19 @@ function saveCatName(id){
   const cat=categories.find(c=>c.id===id);
   if(cat&&val)cat.name=val;
   editingCatId=null;
-  saveToSheet(null);renderGoals();
+  saveToSheet('cats');renderGoals();
 }
 
 function addCat(){
   categories.push({id:uid(),name:'新分类',nodes:[]});
   editingCatId=categories[categories.length-1].id;
-  saveToSheet(null);renderGoals();
+  saveToSheet('cats');renderGoals();
 }
 
 function delCat(id){
   if(!confirm('确定删除这个分类及所有内容？'))return;
   categories=categories.filter(c=>c.id!==id);
-  saveToSheet(null);renderGoals();
+  saveToSheet('cats');renderGoals();
 }
 
 function findNode(nodes,id){
@@ -409,7 +398,7 @@ function removeNode(nodes,id){
 function toggleNode(catId,nodeId){
   const cat=categories.find(c=>c.id===catId);if(!cat)return;
   const node=findNode(cat.nodes,nodeId);
-  if(node){node.done=!node.done;saveToSheet(null);renderGoals();}
+  if(node){node.done=!node.done;saveToSheet('cats');renderGoals();}
 }
 
 function addNode(catId,parentId){
@@ -421,14 +410,14 @@ function addNode(catId,parentId){
   if(parentId===null){cat.nodes.push(newNode);}
   else{const p=findNode(cat.nodes,parentId);if(p){if(!p.children)p.children=[];p.children.push(newNode);}}
   el.value='';
-  saveToSheet(null);renderGoals();
+  saveToSheet('cats');renderGoals();
 }
 
 function delNode(catId,nodeId){
   if(!confirm('确定删除这个项目？'))return;
   const cat=categories.find(c=>c.id===catId);if(!cat)return;
   removeNode(cat.nodes,nodeId);
-  saveToSheet(null);renderGoals();
+  saveToSheet('cats');renderGoals();
 }
 
 /* ── DRAG & DROP ── */
@@ -446,7 +435,7 @@ function catDrop(e,targetId){
   const [moved]=categories.splice(fromIdx,1);
   categories.splice(toIdx,0,moved);
   dragCatId=null;
-  saveToSheet(null); renderGoals();
+  saveToSheet('cats'); renderGoals();
 }
 
 function nodeDragStart(e,catId,nodeId){
@@ -475,7 +464,7 @@ function nodeDrop(e,catId,targetNodeId){
   const [moved]=fromParent.splice(fromIdx,1);
   fromParent.splice(toIdx,0,moved);
   dragNodeId=null;
-  saveToSheet(null); renderGoals();
+  saveToSheet('cats'); renderGoals();
 }
 
 function findParentList(nodes,id){
@@ -531,7 +520,7 @@ function addEntry(){
   const text=(el?.value||'').trim();if(!text)return;
   const d=tod();if(!days[d])days[d]=[];
   days[d].push({id:uid(),text,time:nowt()});
-  saveToSheet(d);
+  saveToSheet('days');
   el.value='';el.style.height='';
   renderToday();
   setTimeout(()=>{const e=document.getElementById('qi');if(e)e.focus();},10);
@@ -540,7 +529,7 @@ function addEntry(){
 function delEntry(date,id){
   if(!days[date])return;
   days[date]=days[date].filter(i=>i.id!=id);
-  saveToSheet(date);
+  saveToSheet('days');
   if(curTab==='today')renderToday();else renderHistory();
 }
 
