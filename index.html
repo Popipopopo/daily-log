@@ -185,22 +185,44 @@ async function loadFromSheet(){
       categories=data.categories;
     } else if(data.lt&&data.lt.length>0){
       migrateOldLT(data.lt);
-      await saveToSheet();
-    } else if(!data.categories&&!data.lt){
+      await saveCategoriesOnly();
+    } else if(Object.keys(days).length===0&&(!data.categories||data.categories.length===0)){
       await seedData();
     }
   }catch(e){days={};categories=[];await seedData();}
   setSyncing('');
 }
 
-async function saveToSheet(){
+async function saveDay(date){
+  const items=days[date]||[];
+  const encoded=encodeURIComponent(JSON.stringify(items));
+  await jsonp(API+'?action=saveDay&date='+encodeURIComponent(date)+'&data='+encoded);
+}
+
+async function saveCategoriesOnly(){
+  const encoded=encodeURIComponent(JSON.stringify(categories));
+  await jsonp(API+'?action=saveCategories&data='+encoded);
+}
+
+async function saveToSheet(date){
   setSyncing('保存中…');
   try{
-    const encoded=encodeURIComponent(JSON.stringify({days,categories}));
-    await jsonp(API+'?action=save&data='+encoded);
+    const saves=[];
+    if(date) saves.push(saveDay(date));
+    else saves.push(saveCategoriesOnly());
+    await Promise.all(saves);
     setSyncing('已保存 ✓');
     setTimeout(()=>setSyncing(''),2000);
   }catch(e){setSyncing('保存失败');}
+}
+
+function trimOldDays(keepDays){
+  const cutoff=new Date();
+  cutoff.setDate(cutoff.getDate()-keepDays);
+  const cutStr=cutoff.toISOString().slice(0,10);
+  const trimmed={};
+  Object.keys(days).filter(d=>d>=cutStr).forEach(d=>{trimmed[d]=days[d];});
+  return trimmed;
 }
 
 function migrateOldLT(lt){
@@ -251,7 +273,9 @@ async function seedData(){
       {id:uid(),text:'booth虚拟产品 人设',done:false,children:[]},
     ]},
   ];
-  await saveToSheet();
+  const saves=Object.keys(days).map(d=>saveDay(d));
+  saves.push(saveCategoriesOnly());
+  await Promise.all(saves);
 }
 
 /* ── GOALS ── */
@@ -356,19 +380,19 @@ function saveCatName(id){
   const cat=categories.find(c=>c.id===id);
   if(cat&&val)cat.name=val;
   editingCatId=null;
-  saveToSheet();renderGoals();
+  saveToSheet(null);renderGoals();
 }
 
 function addCat(){
   categories.push({id:uid(),name:'新分类',nodes:[]});
   editingCatId=categories[categories.length-1].id;
-  saveToSheet();renderGoals();
+  saveToSheet(null);renderGoals();
 }
 
 function delCat(id){
   if(!confirm('确定删除这个分类及所有内容？'))return;
   categories=categories.filter(c=>c.id!==id);
-  saveToSheet();renderGoals();
+  saveToSheet(null);renderGoals();
 }
 
 function findNode(nodes,id){
@@ -386,7 +410,7 @@ function removeNode(nodes,id){
 function toggleNode(catId,nodeId){
   const cat=categories.find(c=>c.id===catId);if(!cat)return;
   const node=findNode(cat.nodes,nodeId);
-  if(node){node.done=!node.done;saveToSheet();renderGoals();}
+  if(node){node.done=!node.done;saveToSheet(null);renderGoals();}
 }
 
 function addNode(catId,parentId){
@@ -398,14 +422,14 @@ function addNode(catId,parentId){
   if(parentId===null){cat.nodes.push(newNode);}
   else{const p=findNode(cat.nodes,parentId);if(p){if(!p.children)p.children=[];p.children.push(newNode);}}
   el.value='';
-  saveToSheet();renderGoals();
+  saveToSheet(null);renderGoals();
 }
 
 function delNode(catId,nodeId){
   if(!confirm('确定删除这个项目？'))return;
   const cat=categories.find(c=>c.id===catId);if(!cat)return;
   removeNode(cat.nodes,nodeId);
-  saveToSheet();renderGoals();
+  saveToSheet(null);renderGoals();
 }
 
 /* ── DRAG & DROP ── */
@@ -423,7 +447,7 @@ function catDrop(e,targetId){
   const [moved]=categories.splice(fromIdx,1);
   categories.splice(toIdx,0,moved);
   dragCatId=null;
-  saveToSheet(); renderGoals();
+  saveToSheet(null); renderGoals();
 }
 
 function nodeDragStart(e,catId,nodeId){
@@ -452,7 +476,7 @@ function nodeDrop(e,catId,targetNodeId){
   const [moved]=fromParent.splice(fromIdx,1);
   fromParent.splice(toIdx,0,moved);
   dragNodeId=null;
-  saveToSheet(); renderGoals();
+  saveToSheet(null); renderGoals();
 }
 
 function findParentList(nodes,id){
@@ -508,7 +532,8 @@ function addEntry(){
   const text=(el?.value||'').trim();if(!text)return;
   const d=tod();if(!days[d])days[d]=[];
   days[d].push({id:uid(),text,time:nowt()});
-  saveToSheet();el.value='';el.style.height='';
+  saveToSheet(d);
+  el.value='';el.style.height='';
   renderToday();
   setTimeout(()=>{const e=document.getElementById('qi');if(e)e.focus();},10);
 }
@@ -516,7 +541,7 @@ function addEntry(){
 function delEntry(date,id){
   if(!days[date])return;
   days[date]=days[date].filter(i=>i.id!=id);
-  saveToSheet();
+  saveToSheet(date);
   if(curTab==='today')renderToday();else renderHistory();
 }
 
