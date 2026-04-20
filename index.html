@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Daily Log</title>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500&family=DM+Mono:wght@300;400&display=swap" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/@iconify/iconify@3/dist/iconify.min.js"></script>
 <style>
 :root{
   --bg:#f7f7f5;
@@ -164,8 +163,23 @@ const API=SB_URL+'/rest/v1/log';
 
 let days={},categories=[],curTab='main',viewDate='',curMonth='',editingCatId=null,editingEntryId=null;
 let dragCatId=null,dragNodeCatId=null,dragNodeId=null;
+let undoStack=[];
 
-function tod(){return new Date().toISOString().slice(0,10);}
+/* ── SVG icons ── */
+const IC={
+  chevL:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>`,
+  chevR:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`,
+  chevR12:`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>`,
+  chevD12:`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`,
+  pencil:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  trash:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>`,
+  plus14:`<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+  plus12:`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+  grip:`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="6" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="18" r="1" fill="currentColor"/><circle cx="15" cy="6" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="18" r="1" fill="currentColor"/></svg>`,
+  x12:`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+};
+
+function tod(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;}
 function nowt(){return new Date().toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'});}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 function uid(){return Date.now()+Math.random();}
@@ -173,6 +187,17 @@ function shiftD(d,n){const dt=new Date(d+'T12:00:00');dt.setDate(dt.getDate()+n)
 function fmtDate(d){return new Date(d+'T12:00:00').toLocaleDateString('zh-CN',{month:'long',day:'numeric',weekday:'short'});}
 function setSyncing(m){const el=document.getElementById('sync-status');if(el)el.textContent=m;}
 
+/* ── undo ── */
+function snapshot(){undoStack.push({days:JSON.stringify(days),cats:JSON.stringify(categories)});if(undoStack.length>30)undoStack.shift();}
+function undo(){
+  if(!undoStack.length)return;
+  const s=undoStack.pop();
+  days=JSON.parse(s.days);categories=JSON.parse(s.cats);
+  save('all');renderToday();renderGoals();
+}
+document.addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='z'){e.preventDefault();undo();}});
+
+/* ── supabase ── */
 async function sbGet(key){
   const r=await fetch(`${API}?key=eq.${encodeURIComponent(key)}&select=value`,{headers:HDRS});
   const data=await r.json();return data&&data[0]?data[0].value:null;
@@ -180,13 +205,11 @@ async function sbGet(key){
 async function sbSet(key,value){
   await fetch(API+'?on_conflict=key',{method:'POST',headers:{...HDRS,'Prefer':'resolution=merge-duplicates'},body:JSON.stringify({key,value})});
 }
-
 async function loadData(){
   setSyncing('加载中…');
   try{
     const[dv,cv]=await Promise.all([sbGet('days'),sbGet('cats')]);
-    days=dv?JSON.parse(dv):{};
-    categories=cv?JSON.parse(cv):[];
+    days=dv?JSON.parse(dv):{};categories=cv?JSON.parse(cv):[];
     if(Object.keys(days).length===0&&categories.length===0) await seedData();
   }catch(e){
     days={};categories=[];
@@ -196,7 +219,6 @@ async function loadData(){
   }
   setSyncing('');
 }
-
 async function save(type){
   setSyncing('保存中…');
   try{
@@ -256,15 +278,15 @@ function renderToday(){
   const d=viewDate||tod();const isT=d===tod();const items=days[d]||[];
   let h=`<div class="col-title">今天</div>
   <div class="date-nav">
-    <button class="dnav-btn" onclick="goDate('${shiftD(d,-1)}')"><span class="iconify" data-icon="tabler:chevron-left" data-width="14"></span></button>
+    <button class="dnav-btn" onclick="goDate('${shiftD(d,-1)}')">${IC.chevL}</button>
     <span class="dnav-label">${fmtDate(d)}</span>
-    <button class="dnav-btn" onclick="goDate('${shiftD(d,1)}')" ${isT?'disabled':''} ><span class="iconify" data-icon="tabler:chevron-right" data-width="14"></span></button>
+    <button class="dnav-btn" onclick="goDate('${shiftD(d,1)}')" ${isT?'disabled':''}>${IC.chevR}</button>
     ${!isT?`<button class="back-btn" onclick="goDate('${tod()}')">今天</button>`:''}
   </div>
   <div class="entry-list">`;
   if(items.length===0){
     h+=`<div class="empty-txt">${isT?'还没有记录，写点什么吧':'这天没有记录'}</div>`;
-  } else {
+  }else{
     items.forEach(item=>{
       if(editingEntryId===item.id){
         h+=`<div class="erow">
@@ -275,13 +297,13 @@ function renderToday(){
             <button class="e-btn-txt" onclick="cancelEdit()">取消</button>
           </div>
         </div>`;
-      } else {
+      }else{
         h+=`<div class="erow">
           <span class="etime">${item.time||''}</span>
           <span class="etxt" ondblclick="startEdit(${item.id})">${esc(item.text)}</span>
           <div class="erow-actions">
-            <button class="e-btn" onclick="startEdit(${item.id})" title="编辑"><span class="iconify" data-icon="tabler:pencil" data-width="13"></span></button>
-            <button class="e-btn del" onclick="delEntry('${d}',${item.id})" title="删除"><span class="iconify" data-icon="tabler:trash" data-width="13"></span></button>
+            <button class="e-btn" onclick="startEdit(${item.id})" title="编辑">${IC.pencil}</button>
+            <button class="e-btn del" onclick="delEntry('${d}',${item.id})" title="删除">${IC.trash}</button>
           </div>
         </div>`;
       }
@@ -291,76 +313,70 @@ function renderToday(){
   if(isT){
     h+=`<div class="input-wrap">
       <textarea class="quick-input" id="qi" placeholder="想到什么就写…" oninput="ar(this)"></textarea>
-      <div class="input-actions">
-        <button class="record-btn" onclick="addEntry()"><span class="iconify" data-icon="tabler:plus" data-width="14"></span>记下</button>
-      </div>
+      <div class="input-actions"><button class="record-btn" onclick="addEntry()">${IC.plus14}记下</button></div>
     </div>`;
   }
   document.getElementById('colToday').innerHTML=h;
   if(isT){const el=document.getElementById('qi');if(el)el.focus();}
-  if(editingEntryId!==null){
-    const el=document.getElementById('edit-'+editingEntryId);
-    if(el){el.focus();el.selectionStart=el.value.length;}
-  }
+  if(editingEntryId!==null){const el=document.getElementById('edit-'+editingEntryId);if(el){el.focus();el.selectionStart=el.value.length;}}
 }
 
 function ar(el){el.style.height='auto';el.style.height=el.scrollHeight+'px';}
 function goDate(d){viewDate=d;renderToday();}
-
 function addEntry(){
-  const el=document.getElementById('qi');
-  const text=(el?.value||'').trim();if(!text)return;
+  const el=document.getElementById('qi');const text=(el?.value||'').trim();if(!text)return;
+  snapshot();
   const d=tod();if(!days[d])days[d]=[];
   days[d].push({id:uid(),text,time:nowt()});
   save('days');el.value='';el.style.height='';renderToday();
   setTimeout(()=>{const e=document.getElementById('qi');if(e)e.focus();},10);
 }
-
 function startEdit(id){editingEntryId=id;renderToday();}
 function cancelEdit(){editingEntryId=null;renderToday();}
 function handleEditKey(e,id,date){if(e.key==='Escape')cancelEdit();if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();saveEdit(id,date);}}
 function saveEdit(id,date){
-  const el=document.getElementById('edit-'+id);
-  const text=(el?.value||'').trim();if(!text)return;
+  const el=document.getElementById('edit-'+id);const text=(el?.value||'').trim();if(!text)return;
+  snapshot();
   const item=(days[date]||[]).find(i=>i.id===id);
   if(item){item.text=text;save('days');}
   editingEntryId=null;renderToday();
 }
-
 function delEntry(date,id){
   if(!confirm('删除这条记录？'))return;
+  snapshot();
   if(!days[date])return;
   days[date]=days[date].filter(i=>i.id!=id);
   save('days');renderToday();
 }
 
-/* ── GOALS ── */
+/* ── GOALS helpers ── */
 function countN(nodes){let t=0,d=0;function w(ns){ns.forEach(n=>{t++;if(n.done)d++;w(n.children||[]);});}w(nodes);return{t,d};}
 function findNode(nodes,id){for(const n of nodes){if(n.id===id)return n;const f=findNode(n.children||[],id);if(f)return f;}return null;}
-function removeNode(nodes,id){for(let i=0;i<nodes.length;i++){if(nodes[i].id===id){nodes.splice(i,1);return true;}if(removeNode(nodes[i].children||[],id))return true;}return false;}
+function removeNode(nodes,id){for(let i=0;i<nodes.length;i++){if(nodes[i].id===id){const[n]=nodes.splice(i,1);return n;}const r=removeNode(nodes[i].children||[],id);if(r)return r;}return null;}
 function findPL(nodes,id){for(const n of nodes){if(n.id===id)return nodes;const f=findPL(n.children||[],id);if(f)return f;}return null;}
 
+/* ── GOALS render ── */
 function renderGoals(){
-  let h=`<div class="goals-hdr"><div class="col-title">目标</div><button class="add-cat-btn" onclick="addCat()"><span class="iconify" data-icon="tabler:plus" data-width="12"></span>新分类</button></div>`;
+  let h=`<div class="goals-hdr"><div class="col-title">目标</div><button class="add-cat-btn" onclick="addCat()">${IC.plus12}新分类</button></div>`;
   categories.forEach(cat=>{
     const{t,d}=countN(cat.nodes);
     const nameHtml=editingCatId===cat.id
       ?`<input class="cat-name-input" id="cni-${cat.id}" value="${esc(cat.name)}" onblur="saveCatName(${cat.id})" onkeydown="if(event.key==='Enter'||event.key==='Escape')this.blur()">`
       :`<span class="cat-name-display" onclick="startEditCat(${cat.id})">${esc(cat.name)}</span>`;
-    h+=`<div class="cat-block" draggable="true" data-cid="${cat.id}"
+    h+=`<div class="cat-block" draggable="true"
       ondragstart="catDS(event,${cat.id})" ondragover="catDO(event,${cat.id})"
       ondragleave="catDL(event)" ondrop="catDrop(event,${cat.id})">
       <div class="cat-hdr">
-        <span class="cat-drag"><span class="iconify" data-icon="tabler:grip-vertical" data-width="14"></span></span>
+        <span class="cat-drag">${IC.grip}</span>
         ${nameHtml}
         <span class="cat-count">${d}/${t}</span>
-        <button class="cat-del" onclick="delCat(${cat.id})"><span class="iconify" data-icon="tabler:x" data-width="14"></span></button>
+        <button class="cat-del" onclick="delCat(${cat.id})">${IC.x12}</button>
       </div>
       ${renderNodes(cat.nodes,cat.id,0)}
-      <div class="add-node-row" style="padding-left:0">
+      <div class="add-node-row">
         <span class="exp-sp"></span>
         <input placeholder="添加到「${esc(cat.name)}」…" id="ani-${cat.id}-root" onkeydown="if(event.key==='Enter')addNode(${cat.id},null)">
-        <button onclick="addNode(${cat.id},null)"><span class="iconify" data-icon="tabler:plus" data-width="14"></span></button>
+        <button onclick="addNode(${cat.id},null)">${IC.plus14}</button>
       </div>
     </div>`;
   });
@@ -374,29 +390,32 @@ function renderNodes(nodes,catId,depth){
   nodes.forEach(node=>{
     const hasC=node.children&&node.children.length>0;
     const canAdd=depth<2;
-    const expBtn=hasC?`<button class="exp-btn" id="exp-${node.id}" onclick="toggleExp(${node.id})"><span class="iconify" data-icon="tabler:chevron-right" data-width="12"></span></button>`:`<span class="exp-sp"></span>`;
+    const expBtn=hasC
+      ?`<button class="exp-btn" id="exp-${node.id}" onclick="toggleExp(${node.id})" data-open="false">${IC.chevR12}</button>`
+      :`<span class="exp-sp"></span>`;
+    const txtColor=depth===0?'':depth===1?'color:var(--ink2)':'color:var(--ink3)';
     h+=`<div class="tree-node" draggable="true"
       ondragstart="nodeDS(event,${catId},${node.id})"
-      ondragover="nodeDO(event,${node.id})"
+      ondragover="nodeDO(event,${catId},${node.id})"
       ondragleave="nodeDL(event)"
       ondrop="nodeDrop(event,${catId},${node.id})">
       <div class="tree-row" style="padding-left:${indent}px">
-        <span class="node-drag"><span class="iconify" data-icon="tabler:grip-vertical" data-width="12"></span></span>
+        <span class="node-drag">${IC.grip}</span>
         ${expBtn}
         <input type="checkbox" class="node-cb" ${node.done?'checked':''} onchange="toggleNode(${catId},${node.id})">
-        <span class="node-txt${node.done?' done':''}">${esc(node.text)}</span>
+        <span class="node-txt${node.done?' done':''}" style="${txtColor}">${esc(node.text)}</span>
         <div class="node-acts">
           ${canAdd?`<button class="nact-btn-txt" onclick="focusChild(${catId},${node.id})">+ 子项</button>`:''}
-          <button class="nact-btn del" onclick="delNode(${catId},${node.id})"><span class="iconify" data-icon="tabler:x" data-width="12"></span></button>
+          <button class="nact-btn del" onclick="delNode(${catId},${node.id})">${IC.x12}</button>
         </div>
       </div>`;
     if(canAdd){
       h+=`<div class="children${hasC?' open':''}" id="ch-${node.id}">
         ${renderNodes(node.children||[],catId,depth+1)}
-        <div class="add-node-row" style="padding-left:${indent+16}px" id="acr-${node.id}">
+        <div class="add-node-row" style="padding-left:${indent+16}px;display:none" id="acr-${node.id}">
           <span class="exp-sp"></span>
           <input placeholder="添加子项…" id="ani-${catId}-${node.id}" onkeydown="if(event.key==='Enter')addNode(${catId},${node.id})">
-          <button onclick="addNode(${catId},${node.id})"><span class="iconify" data-icon="tabler:plus" data-width="14"></span></button>
+          <button onclick="addNode(${catId},${node.id})">${IC.plus14}</button>
         </div>
       </div>`;
     }
@@ -410,36 +429,107 @@ function toggleExp(id){
   const btn=document.getElementById('exp-'+id);
   if(!ch)return;
   const o=ch.classList.toggle('open');
-  if(btn){
-    const icon=btn.querySelector('.iconify');
-    if(icon) icon.setAttribute('data-icon', o?'tabler:chevron-down':'tabler:chevron-right');
+  if(btn) btn.innerHTML=o?IC.chevD12:IC.chevR12;
+}
+function focusChild(catId,nodeId){
+  const ch=document.getElementById('ch-'+nodeId);
+  if(ch&&!ch.classList.contains('open'))ch.classList.add('open');
+  const el=document.getElementById(`ani-${catId}-${nodeId}`);
+  if(el){
+    el.focus();
+    const row=document.getElementById('acr-'+nodeId);
+    if(row) row.style.display='flex';
+    el.onblur=()=>{setTimeout(()=>{if(!el.value.trim()){const r=document.getElementById('acr-'+nodeId);if(r)r.style.display='none';}},150);};
   }
 }
-function focusChild(catId,nodeId){const ch=document.getElementById('ch-'+nodeId);if(ch&&!ch.classList.contains('open'))ch.classList.add('open');const el=document.getElementById(`ani-${catId}-${nodeId}`);if(el)el.focus();}
 function startEditCat(id){editingCatId=id;renderGoals();}
-function saveCatName(id){const el=document.getElementById('cni-'+id);if(!el)return;const v=el.value.trim();const c=categories.find(x=>x.id===id);if(c&&v)c.name=v;editingCatId=null;save('cats');renderGoals();}
-function addCat(){categories.push({id:uid(),name:'新分类',nodes:[]});editingCatId=categories[categories.length-1].id;save('cats');renderGoals();}
-function delCat(id){if(!confirm('确定删除这个分类及所有内容？'))return;categories=categories.filter(c=>c.id!==id);save('cats');renderGoals();}
-function toggleNode(catId,nodeId){const c=categories.find(x=>x.id===catId);if(!c)return;const n=findNode(c.nodes,nodeId);if(n){n.done=!n.done;save('cats');renderGoals();}}
+function saveCatName(id){
+  const el=document.getElementById('cni-'+id);if(!el)return;
+  const v=el.value.trim();const c=categories.find(x=>x.id===id);
+  if(c&&v){snapshot();c.name=v;save('cats');}
+  editingCatId=null;renderGoals();
+}
+function addCat(){snapshot();categories.push({id:uid(),name:'新分类',nodes:[]});editingCatId=categories[categories.length-1].id;save('cats');renderGoals();}
+function delCat(id){if(!confirm('确定删除这个分类及所有内容？'))return;snapshot();categories=categories.filter(c=>c.id!==id);save('cats');renderGoals();}
+function toggleNode(catId,nodeId){const c=categories.find(x=>x.id===catId);if(!c)return;const n=findNode(c.nodes,nodeId);if(n){snapshot();n.done=!n.done;save('cats');renderGoals();}}
 function addNode(catId,parentId){
   const inputId=`ani-${catId}-${parentId===null?'root':parentId}`;
   const el=document.getElementById(inputId);const text=(el?.value||'').trim();if(!text)return;
   const c=categories.find(x=>x.id===catId);if(!c)return;
+  snapshot();
   const nn={id:uid(),text,done:false,children:[]};
   if(parentId===null)c.nodes.push(nn);
   else{const p=findNode(c.nodes,parentId);if(p){if(!p.children)p.children=[];p.children.push(nn);}}
   el.value='';save('cats');renderGoals();
 }
-function delNode(catId,nodeId){if(!confirm('确定删除这个项目？'))return;const c=categories.find(x=>x.id===catId);if(!c)return;removeNode(c.nodes,nodeId);save('cats');renderGoals();}
+function delNode(catId,nodeId){
+  if(!confirm('确定删除这个项目？'))return;
+  snapshot();
+  const c=categories.find(x=>x.id===catId);if(!c)return;
+  removeNode(c.nodes,nodeId);save('cats');renderGoals();
+}
 
+/* ── DRAG: categories ── */
 function catDS(e,id){dragCatId=id;dragNodeId=null;e.dataTransfer.effectAllowed='move';e.currentTarget.classList.add('dragging');}
 function catDO(e,id){if(!dragCatId||dragCatId===id)return;e.preventDefault();e.currentTarget.classList.add('drag-over');}
 function catDL(e){e.currentTarget.classList.remove('drag-over');}
-function catDrop(e,tid){e.currentTarget.classList.remove('drag-over','dragging');if(!dragCatId||dragCatId===tid)return;const fi=categories.findIndex(c=>c.id===dragCatId),ti=categories.findIndex(c=>c.id===tid);if(fi<0||ti<0)return;const[m]=categories.splice(fi,1);categories.splice(ti,0,m);dragCatId=null;save('cats');renderGoals();}
-function nodeDS(e,catId,nodeId){dragNodeCatId=catId;dragNodeId=nodeId;dragCatId=null;e.dataTransfer.effectAllowed='move';e.stopPropagation();}
-function nodeDO(e,nodeId){if(!dragNodeId||dragNodeId===nodeId)return;e.preventDefault();e.stopPropagation();document.querySelectorAll('.tree-node').forEach(el=>el.classList.remove('drag-over-node'));e.currentTarget.classList.add('drag-over-node');}
+function catDrop(e,tid){
+  e.currentTarget.classList.remove('drag-over','dragging');
+  if(!dragCatId||dragCatId===tid)return;
+  snapshot();
+  const fi=categories.findIndex(c=>c.id===dragCatId),ti=categories.findIndex(c=>c.id===tid);
+  if(fi<0||ti<0)return;
+  const[m]=categories.splice(fi,1);categories.splice(ti,0,m);
+  dragCatId=null;save('cats');renderGoals();
+}
+
+/* ── DRAG: nodes (free cross-level) ── */
+function nodeDS(e,catId,nodeId){
+  dragNodeCatId=catId;dragNodeId=nodeId;dragCatId=null;
+  e.dataTransfer.effectAllowed='move';e.stopPropagation();
+}
+function nodeDO(e,catId,nodeId){
+  if(!dragNodeId||dragNodeId===nodeId)return;
+  e.preventDefault();e.stopPropagation();
+  document.querySelectorAll('.tree-node').forEach(el=>el.classList.remove('drag-over-node'));
+  e.currentTarget.classList.add('drag-over-node');
+}
 function nodeDL(e){e.currentTarget.classList.remove('drag-over-node');}
-function nodeDrop(e,catId,tid){e.stopPropagation();document.querySelectorAll('.tree-node').forEach(el=>el.classList.remove('drag-over-node'));if(!dragNodeId||dragNodeId===tid||dragNodeCatId!==catId)return;const c=categories.find(x=>x.id===catId);if(!c)return;const fp=findPL(c.nodes,dragNodeId),tp=findPL(c.nodes,tid);if(!fp||!tp||fp!==tp)return;const fi=fp.findIndex(n=>n.id===dragNodeId),ti=fp.findIndex(n=>n.id===tid);if(fi<0||ti<0)return;const[m]=fp.splice(fi,1);fp.splice(ti,0,m);dragNodeId=null;save('cats');renderGoals();}
+function nodeDrop(e,catId,tid){
+  e.stopPropagation();
+  document.querySelectorAll('.tree-node').forEach(el=>el.classList.remove('drag-over-node'));
+  if(!dragNodeId||dragNodeId===tid)return;
+  const srcCat=categories.find(x=>x.id===dragNodeCatId);
+  const dstCat=categories.find(x=>x.id===catId);
+  if(!srcCat||!dstCat)return;
+  snapshot();
+  const moved=removeNode(srcCat.nodes,dragNodeId);
+  if(!moved)return;
+  moved.children=moved.children||[];
+  const dstParent=findPL(dstCat.nodes,tid);
+  if(dstParent){
+    const ti=dstParent.findIndex(n=>n.id===tid);
+    dstParent.splice(ti,0,moved);
+  } else {
+    dstCat.nodes.push(moved);
+  }
+  dragNodeId=null;save('cats');renderGoals();
+}
+
+/* ── drop on cat header = top-level ── */
+function catBodyDO(e,catId){if(!dragNodeId)return;e.preventDefault();e.stopPropagation();}
+function catBodyDrop(e,catId){
+  if(!dragNodeId)return;e.stopPropagation();
+  const srcCat=categories.find(x=>x.id===dragNodeCatId);
+  const dstCat=categories.find(x=>x.id===catId);
+  if(!srcCat||!dstCat)return;
+  snapshot();
+  const moved=removeNode(srcCat.nodes,dragNodeId);
+  if(!moved)return;
+  moved.children=moved.children||[];
+  dstCat.nodes.push(moved);
+  dragNodeId=null;save('cats');renderGoals();
+}
 
 /* ── HISTORY ── */
 function renderHistory(){
@@ -453,8 +543,7 @@ function renderHistory(){
     <div class="hist-stats">
       <div class="hstat"><div class="hstat-n">${allDays.length}</div><div class="hstat-l">天</div></div>
       <div class="hstat"><div class="hstat-n">${total}</div><div class="hstat-l">条记录</div></div>
-    </div>
-    <div class="month-tabs">`;
+    </div><div class="month-tabs">`;
   months.forEach(m=>{const[yr,mo]=m.split('-');h+=`<button class="mtab${m===curMonth?' on':''}" onclick="switchMonth('${m}')">${yr}.${mo}</button>`;});
   h+=`</div><div class="month-days">`;
   allDays.filter(d=>d.startsWith(curMonth)).forEach(date=>{
@@ -463,8 +552,7 @@ function renderHistory(){
     items.forEach(item=>{h+=`<div class="d-item"><span class="d-time">${item.time||''}</span><span>${esc(item.text)}</span></div>`;});
     h+=`</div></div>`;
   });
-  h+=`</div></div>`;
-  el.innerHTML=h;
+  h+=`</div></div>`;el.innerHTML=h;
 }
 function switchMonth(m){curMonth=m;renderHistory();}
 
@@ -481,8 +569,7 @@ function showTab(t){
 (async()=>{
   document.getElementById('hdate').textContent=new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'long',day:'numeric'});
   await loadData();
-  renderToday();
-  renderGoals();
+  renderToday();renderGoals();
 })();
 </script>
 </body>
